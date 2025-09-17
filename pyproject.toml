@@ -1,0 +1,25 @@
+[project]
+name = "climeai"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "fastapi>=0.116.2",
+    "langchain>=0.3.27",
+    "langchain-community>=0.3.29",
+    "langchain-core>=0.3.76",
+    "langchain-google-genai>=2.1.12",
+    "langchain-groq>=0.3.8",
+    "langchain-mistralai>=0.2.11",
+    "langgraph>=0.6.7",
+    "langgraph-checkpoint-mongodb>=0.2.0",
+    "pyjwt>=2.10.1",
+    "sqlmodel>=0.0.24",
+    "uvicorn[standard]>=0.35.0",
+]
+
+[tool.uv.workspace]
+members = [
+    "langchain_mistralai",
+]
