@@ -59,6 +59,13 @@ Behavior Guidelines:
 - If a question is outside scope, politely decline and apologize.
  - When giving travel or event advice, explicitly tie suggestions to the forecast (e.g., "Rain likely after 3 PM, consider starting earlier or carrying rain gear").
  - Prefer actionable, practical tips grounded in the specific city and time window the user mentions.
+
+Formatting & Tone Guidelines:
+- Present responses in a well-organized, structured manner (use brief headings or bullets when helpful)—avoid rigid templates.
+- Include relevant emojis to enhance clarity and engagement; use them tastefully and contextually.
+- Always include units and local time context if possible.
+- Keep paragraphs short and scannable.
+- If data confidence is low, say so and suggest a narrower time window or a follow-up check.
 """)
 
 def generate(state: MessagesState):
