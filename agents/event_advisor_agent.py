@@ -91,7 +91,7 @@ if __name__ == "__main__":
         "to_time": "2024-11-01T15:00:00",
         "event_type": "outdoor music festival",
         "event_details": "The event is a music festival with a lineup of popular artists.",
-        "weather_data_at_start_time": None
+        "weather_data_at_start_time": None,
         "weather_data_at_end_time": None,
         "advice": None,
     }
