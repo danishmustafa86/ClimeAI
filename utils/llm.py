@@ -2,6 +2,7 @@ from langchain.chat_models import init_chat_model
 import os
 from dotenv import load_dotenv
 from configurations.config import config
+from langchain_openai import ChatOpenAI
 
 load_dotenv()
 
@@ -49,15 +50,11 @@ def get_llm_instance(
         An instance of the chat model.
     """
 
-    # Initialize the chat model with temperature and any other kwargs
-    from langchain_aimlapi import AimlapiLLM
-
-    model = AimlapiLLM(
+    model = ChatOpenAI(
         model=config.MODEL_NAME,
-        temperature=temperature,
-        api_key=config.AIML_API_KEY,
-        max_tokens=max_tokens,
-        **kwargs
+        temperature=0,
+        base_url="https://api.aimlapi.com/v1",
+        api_key=config.AIML_API_KEY
     )
     return model
 
