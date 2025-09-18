@@ -8,7 +8,7 @@
 uv sync
 ```
 
-2. Set up environment variables
+2. Set environment variables
 
 ```bash
 cp .env .env.example
