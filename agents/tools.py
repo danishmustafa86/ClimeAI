@@ -37,7 +37,9 @@ def get_current_weather(city_name: str) -> dict:
     try:
         response = requests.get(base_url, params=params)
         response.raise_for_status()
-        return response.json()
+        data = response.json()
+        print("Current weather data:::", data)
+        return data
     except requests.exceptions.RequestException as e:
         return {"error": f"Error making weather API call: {e}"}
     except Exception as e:
@@ -77,7 +79,9 @@ def get_hourly_weather(city_name: str) -> dict:
     try:
         response = requests.get(base_url, params=params)
         response.raise_for_status()
-        return response.json()
+        data = response.json()
+        print("Hourly weather data:::", data)
+        return data
     except requests.exceptions.RequestException as e:
         return {"error": f"Error making weather API call: {e}"}
     except Exception as e:
@@ -117,7 +121,9 @@ def get_daily_forecast(city_name: str) -> dict:
     try:
         response = requests.get(base_url, params=params)
         response.raise_for_status()
-        return response.json()
+        data = response.json()
+        print("Daily forecast data:::", data)
+        return data
     except requests.exceptions.RequestException as e:
         return {"error": f"Error making weather API call: {e}"}
     except Exception as e:

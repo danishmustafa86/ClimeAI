@@ -96,5 +96,5 @@ try:
     memory = MongoDBSaver(mongodb_client)
     graph = graph_builder.compile(checkpointer=memory)
 except Exception as e:
-    logger.error(f"Error building state graph: {e}")
+    logger.error(f"Error building climeai graph: {e}")
     raise
