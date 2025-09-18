@@ -1,6 +1,7 @@
 import logging
+import copy
 from dotenv import load_dotenv
-from langchain.schema import SystemMessage
+from langchain.schema import SystemMessage, HumanMessage
 from langgraph.graph import MessagesState, StateGraph, START, END
 from langgraph.prebuilt import ToolNode, tools_condition
 from langgraph.checkpoint.mongodb import MongoDBSaver
@@ -52,6 +53,11 @@ Available Tools:
    - Retrieves the daily weather forecast for today and the next 7 days.
    - Ideal for medium-term planning, such as weekly travel, events, or agriculture activities.
 
+4. get_weather_at_specific_time(city_name: str, time_iso: str)
+   - Retrieves weather for a specific city at an exact datetime (ISO 8601).
+   - Internally converts the datetime to a Unix timestamp and calls the One Call 3.0 timemachine endpoint.
+   - Useful for event/travel advice tied to a specific time window.
+
 Behavior Guidelines:
 - Always answer queries in a clear, concise, and user-friendly manner.
 - Use the tools effectively to provide accurate and up-to-date weather data.
@@ -79,7 +85,43 @@ def generate(state: MessagesState):
         dict: A dictionary containing the generated message.
     """
     try:
-        return {"messages": [llm_with_tools.invoke([sys_msg] + state["messages"][-6:])]}
+        # Build provider-compatible messages:
+        # - Ensure content is not None
+        # - Convert tool role messages into plain HumanMessages containing tool outputs
+        # - Drop assistant messages that only contain tool_calls (AIML rejects null content on tool-calls)
+        def _to_provider_messages(messages):
+            converted = []
+            for message in messages:
+                msg_copy = copy.deepcopy(message)
+                # Normalize content
+                if getattr(msg_copy, "content", None) is None:
+                    try:
+                        msg_copy.content = ""
+                    except Exception:
+                        pass
+                # Detect tool output messages (have tool_call_id attribute)
+                if hasattr(msg_copy, "tool_call_id"):
+                    tool_name = getattr(msg_copy, "name", "tool")
+                    converted.append(
+                        HumanMessage(content=f"Tool {tool_name} result:\n{getattr(msg_copy, 'content', '')}")
+                    )
+                    continue
+                # Detect assistant tool-call messages (additional_kwargs.tool_calls present) and drop them
+                try:
+                    if hasattr(msg_copy, "additional_kwargs") and isinstance(msg_copy.additional_kwargs, dict):
+                        if msg_copy.additional_kwargs.get("tool_calls"):
+                            # Skip adding this message; the following tool result will be added as HumanMessage
+                            continue
+                except Exception:
+                    pass
+                converted.append(msg_copy)
+            return converted
+
+        recent_messages = state["messages"][-6:]
+        provider_messages = _to_provider_messages(recent_messages)
+        invoke_messages = [sys_msg] + provider_messages
+
+        return {"messages": [llm_with_tools.invoke(invoke_messages)]}
     except Exception as e:
         logger.error(f"Error during response generation: {e}")
         raise
