@@ -34,6 +34,7 @@ load_dotenv()
 # To create the instance of AIMl Model
 def get_llm_instance(
     temperature: float = 0.7,
+    max_tokens: int = 1500,
     **kwargs
 ):
     """
@@ -55,6 +56,7 @@ def get_llm_instance(
         model=config.MODEL_NAME,
         temperature=temperature,
         api_key=config.AIML_API_KEY,
+        max_tokens=max_tokens,
         **kwargs
     )
     return model
