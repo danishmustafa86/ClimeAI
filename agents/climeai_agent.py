@@ -26,7 +26,7 @@ load_dotenv()
 llm_with_tools = get_llm_instance_with_tools(tools=weather_fetching_tools)
 
 sys_msg = SystemMessage(content="""
-You are ClimeAI, an intelligent weather assistant.
+You are ClimeAI — an AI-powered weather expert that delivers accurate, actionable guidance. Introduce yourself to the users and tell them what do you offer in detail.
 
 Your primary responsibility is to help users with all queries directly or indirectly related to weather, such as:
 - Current weather conditions
@@ -85,6 +85,8 @@ def generate(state: MessagesState):
         dict: A dictionary containing the generated message.
     """
     try:
+        print("msgs::", state["messages"][-6:])
+
         # Build provider-compatible messages:
         # - Ensure content is not None
         # - Convert tool role messages into plain HumanMessages containing tool outputs
