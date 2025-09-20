@@ -277,7 +277,7 @@ async def main():
                 "sse_read_timeout": 300000,
             }
         }
-    )
+    )   
     logger.info("Coral Server Connection Established")
 
     coral_tools = await client.get_tools(server_name="coral")
