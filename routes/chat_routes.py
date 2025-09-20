@@ -7,9 +7,13 @@ from utils.chat_agent_utils import respond, save_history
 from utils.voice_utils import speech_to_text, text_to_speech
 from dotenv import load_dotenv
 import os
+import uuid
 
 load_dotenv()
 chat_router = APIRouter()
+
+# Get base URL from environment variable, default to localhost for development
+BASE_URL = os.getenv("BASE_URL", "http://localhost:8000")
 
 @chat_router.post("/api/chat")
 async def chat_endpoint(
@@ -35,12 +39,11 @@ async def chat_endpoint(
         # Step 2: Get agent response
         bot_response = await respond(user_id, user_message)
 
-        # Step 3: Save history in background
-        background_tasks.add_task(save_history, user_id, user_message, bot_response)
-
-        # Step 4: Generate TTS file (optional)
+        # Step 3: Generate unique audio filename and TTS file
+        audio_id = str(uuid.uuid4())
+        audio_filename = f"tts_{user_id}_{audio_id}.mp3"
         print(f"Generating audio for response length: {len(bot_response)} characters")
-        audio_path = text_to_speech(bot_response, save_path=f"tts_{user_id}.mp3")
+        audio_path = text_to_speech(bot_response, save_path=audio_filename)
         
         # Check if audio file was created and has content
         if os.path.exists(audio_path):
@@ -49,11 +52,15 @@ async def chat_endpoint(
         else:
             print(f"Warning: Audio file not created: {audio_path}")
 
+        # Step 4: Save history with audio URL in background
+        audio_url = f"{BASE_URL}/api/chat/audio/{user_id}/{audio_id}"
+        background_tasks.add_task(save_history, user_id, user_message, bot_response, audio_url)
+
         return JSONResponse(
             status_code=200,
             content={
                 "response": bot_response,
-                "audio_url": f"/api/chat/audio/{user_id}"
+                "audio_url": audio_url
             }
         )
     except Exception as e:
@@ -62,9 +69,9 @@ async def chat_endpoint(
 
 
 # New endpoint to serve audio files
-@chat_router.get("/api/chat/audio/{user_id}")
-async def get_audio(user_id: str):
-    file_path = f"tts_{user_id}.mp3"
+@chat_router.get("/api/chat/audio/{user_id}/{audio_id}")
+async def get_audio(user_id: str, audio_id: str):
+    file_path = f"tts_{user_id}_{audio_id}.mp3"
     print(f"Requesting audio file: {file_path}")
     
     if os.path.exists(file_path):
@@ -87,7 +94,11 @@ async def get_chat_history(user_id: str):
         if not record or "history" not in record:
             return JSONResponse(status_code=200, content={"history": []})
         history=[
-            {"role": msg["role"], "content": msg["content"]} for msg in record["history"]
+            {
+                "role": msg["role"], 
+                "content": msg["content"],
+                "audio_url": msg.get("audio_url")  # Include audio_url if it exists
+            } for msg in record["history"]
         ]
         history.reverse()
         return JSONResponse(status_code=200, content={"history": history})
