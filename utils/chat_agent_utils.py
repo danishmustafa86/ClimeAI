@@ -15,13 +15,16 @@ def load_history(user_id: str):
     except Exception as e:
         raise Exception(f"Error loading chat history: {e}")
 
-def save_history(user_id: str, user_message: str, bot_messages: str):
+def save_history(user_id: str, user_message: str, bot_messages: str, audio_url: str = None):
     """Save user history to MongoDB."""
     try:
         messages =load_history(user_id)
         created_at_time=datetime.now(timezone.utc)
         messages.append({"role": "user", "content": user_message, "created_at":created_at_time})
-        messages.append({"role": "bot", "content": bot_messages, "created_at":created_at_time})
+        bot_message = {"role": "bot", "content": bot_messages, "created_at":created_at_time}
+        if audio_url:
+            bot_message["audio_url"] = audio_url
+        messages.append(bot_message)
         chat_collection.update_one({"user_id": user_id}, {"$set": {"history": messages}}, upsert=True)
     except Exception as e:
         raise Exception(f"Error saving chat history: {e}")
