@@ -1,17 +1,18 @@
-import os
-import requests
-import json
-from datetime import datetime, timezone
+import urllib.parse
 from dotenv import load_dotenv
-from langgraph.graph import StateGraph, START, END
-from langchain_core.prompts import PromptTemplate
-from langchain.schema import HumanMessage
-from langchain_openai import ChatOpenAI
-from typing import TypedDict, Optional
+import os, json, asyncio, traceback
+from langchain.prompts import ChatPromptTemplate
 from langchain_mcp_adapters.client import MultiServerMCPClient
+from langchain.agents import create_tool_calling_agent, AgentExecutor
+from langchain.tools import Tool
+import logging
+import traceback
+import requests
+from datetime import datetime
+from typing import TypedDict, Optional
 
-# Load environment variables
-load_dotenv()
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # Define the shared state schema for the Travel Advisor
 class TravelState(TypedDict):
@@ -27,30 +28,8 @@ class TravelState(TypedDict):
     weather_at_arrival_destination: Optional[str]
     advice: Optional[str]
 
-# Geocoding utility
-def get_coordinates(city_name: str) -> dict:
-    opencage_api_key = os.getenv("OPENCAGE_API_KEY")
-    if not opencage_api_key:
-        raise ValueError("OpenCage API key not found in environment variables.")
-    
-    url = f"https://api.opencagedata.com/geocode/v1/json?q={city_name}&key={opencage_api_key}"
-    try:
-        response = requests.get(url)
-        if response.status_code == 200:
-            results = response.json().get("results", [])
-            if results:
-                latitude = results[0]["geometry"]["lat"]
-                longitude = results[0]["geometry"]["lng"]
-                return {"latitude": latitude, "longitude": longitude}
-            else:
-                return {"error": "No results found for the provided city."}
-        else:
-            return {"error": f"Request failed with status code {response.status_code}"}
-    except requests.exceptions.RequestException as e:
-        return {"error": f"Error making geocoding API call: {e}"}
-
 # Weather at timestamp utility
-def get_weather_at_timestamp(longitude: float, latitude: float, time_iso: str) -> str:
+async def get_weather_at_timestamp(longitude: float, latitude: float, time_iso: str) -> str:
     """Get weather data for a specific location at a specific timestamp."""
     try:
         # Convert ISO time to timestamp
@@ -98,23 +77,18 @@ def get_weather_at_timestamp(longitude: float, latitude: float, time_iso: str) -
     except Exception as e:
         return f"Error: An unexpected error occurred: {e}"
 
-# LLM instance
-def get_llm_instance(temperature=0.7, max_tokens=1500, **kwargs):
-    model = ChatOpenAI(
-        model=os.getenv("MODEL_NAME", "gpt-4o-2024-08-06"),
-        temperature=temperature,
-        base_url="https://api.aimlapi.com/v1",
-        api_key=os.getenv("AIML_API_KEY")
-    )
-    return model
-
-def get_llm_instance_with_tools(tools=[], **kwargs):
-    llm = get_llm_instance(**kwargs)
-    return llm.bind_tools(tools)
-
-# Prompt template for the TravelAdvisor node
-prompt_template = PromptTemplate.from_template(
-    """
+# Travel advisor tool
+async def get_travel_advice(from_longitude: float, from_latitude: float, to_longitude: float, to_latitude: float, from_time: str, to_time: str, vehicle_type: str = "car", travel_details: str = "No additional details provided.") -> str:
+    """Get comprehensive weather-aware travel guidance for a specific route and time window."""
+    logger.info(f"Tool: get_travel_advice Called from ({from_latitude}, {from_longitude}) to ({to_latitude}, {to_longitude}) from {from_time} to {to_time}")
+    
+    try:
+        # Fetch weather at origin (departure time) and destination (arrival time)
+        origin_weather = await get_weather_at_timestamp(from_longitude, from_latitude, from_time)
+        destination_weather = await get_weather_at_timestamp(to_longitude, to_latitude, to_time)
+        
+        # Create a comprehensive travel advice prompt
+        prompt_text = f"""
 You are a travel weather advisor. Provide practical, safety-focused, and concise travel guidance based on the user's itinerary and forecasted weather.
 
 Trip Overview:
@@ -127,108 +101,212 @@ Trip Overview:
 
 Weather Snapshot:
 - Weather at origin around departure time:
-{weather_at_departure_origin}
+{origin_weather}
 
 - Weather at destination around arrival time:
-{weather_at_arrival_destination}
+{destination_weather}
 
 Guidance Requirements:
-- Summarize expected travel conditions succinctly.
-- Safety advisories (visibility, precipitation, wind, thunderstorms, flooding, heat/cold risk).
-- Timing recommendations (leave earlier/later, buffer time, likely delays).
-- Route/transport tips (alternate routes/modes if conditions are risky).
-- Vehicle-specific tips (e.g., for {vehicle_type}: traction, braking distance, crosswind caution, hydration/AC usage).
-- Packing checklist tied to conditions (e.g., rain gear, sunscreen, water, chains, blankets).
-- Local considerations for origin and destination (e.g., urban drainage, coastal winds, mountain passes).
-- Clear callouts if forecast confidence seems low; suggest re-check time window.
+- Summarize expected travel conditions succinctly
+- Safety advisories (visibility, precipitation, wind, thunderstorms, flooding, heat/cold risk)
+- Timing recommendations (leave earlier/later, buffer time, likely delays)
+- Route/transport tips (alternate routes/modes if conditions are risky)
+- Vehicle-specific tips (e.g., for {vehicle_type}: traction, braking distance, crosswind caution, hydration/AC usage)
+- Packing checklist tied to conditions (e.g., rain gear, sunscreen, water, chains, blankets)
+- Local considerations for origin and destination (e.g., urban drainage, coastal winds, mountain passes)
+- Clear callouts if forecast confidence seems low; suggest re-check time window
 
 Output Format:
-- Use short headings and bullet points where helpful.
-- Include temperatures and units if available; state times clearly.
-- Keep the tone calm, practical, and traveler-friendly.
+- Use short headings and bullet points where helpful
+- Include temperatures and units if available; state times clearly
+- Keep the tone calm, practical, and traveler-friendly
 """
-)
+        
+        # Use the LLM to generate advice
+        from langchain_openai import ChatOpenAI
+        model = ChatOpenAI(
+            model=os.getenv("MODEL_NAME", "gpt-4o-2024-08-06"),
+            temperature=0.7,
+            base_url="https://api.aimlapi.com/v1",
+            api_key=os.getenv("AIML_API_KEY")
+        )
+        
+        response = await model.ainvoke(prompt_text)
+        return f"Travel Weather Advice:\n{response.content}"
+        
+    except Exception as e:
+        return f"Error generating travel advice: {str(e)}"
 
-# Node: Weather Fetcher
-# Fetch weather at origin at departure time and at destination at arrival time
+def get_tools_description(tools):
+    return "\n".join(
+        f"Tool: {tool.name}, Schema: {json.dumps(tool.args).replace('{', '{{').replace('}', '}}')}"
+        for tool in tools
+    )
 
-def weather_fetcher(state: TravelState) -> TravelState:
-    origin_weather = get_weather_at_timestamp(
-        state["from_longitude"], state["from_latitude"], state["from_time"]
+async def create_agent(coral_tools, agent_tools, runtime):
+    coral_tools_description = get_tools_description(coral_tools)
+    
+    if runtime is not None:
+        agent_tools_for_description = [
+            tool for tool in coral_tools if tool.name in agent_tools
+        ]
+        agent_tools_description = get_tools_description(agent_tools_for_description)
+        combined_tools = coral_tools + agent_tools_for_description
+        user_request_tool = "request_question"
+        user_answer_tool = "answer_question"
+        print(agent_tools_description)
+    else:
+        # For other runtimes (e.g., devmode), agent_tools is a list of Tool objects
+        agent_tools_description = get_tools_description(agent_tools)
+        combined_tools = coral_tools + agent_tools
+        user_request_tool = "ask_human"
+        user_answer_tool = "ask_human"
+
+    prompt = ChatPromptTemplate.from_messages([
+        (
+            "system",
+            f"""You are a Travel Weather Advisor — a specialized AI agent that provides comprehensive weather-aware travel guidance by analyzing conditions at origin and destination locations, offering transportation-specific recommendations and safety advisories for optimal travel planning.
+
+Your primary responsibility is to evaluate weather conditions at departure and arrival locations to provide practical, safety-focused travel guidance, including:
+- Multi-location weather analysis (origin and destination)
+- Transportation-specific guidance (car, flight, train, bus, motorcycle, bicycle, walking)
+- Safety-first approach with risk assessment and mitigation
+- Timing recommendations and optimal scheduling
+- Route optimization and weather-aware suggestions
+- Packing checklists and weather-appropriate gear
+- Local considerations and regional weather patterns
+- Delay predictions and weather-related disruptions
+
+You must always remain focused on weather-related travel planning. 
+If a user asks something outside the scope of weather-aware travel planning, politely decline and respond with an apology, such as:
+"I'm sorry, but I can only assist with weather-related travel planning questions."
+
+Available Travel Planning Tools:
+1. get_travel_advice(from_longitude, from_latitude, to_longitude, to_latitude, from_time, to_time, vehicle_type, travel_details) - Get comprehensive weather-aware travel guidance
+
+Input Parameters:
+- from_longitude: Origin longitude (required)
+- from_latitude: Origin latitude (required)
+- to_longitude: Destination longitude (required)
+- to_latitude: Destination latitude (required)
+- from_time: Departure time in ISO 8601 format (required)
+- to_time: Arrival time in ISO 8601 format (required)
+- vehicle_type: Transportation mode (car/flight/train/bus/motorcycle/bicycle/walking) (optional)
+- travel_details: Additional travel context and requirements (optional)
+
+Supported Transportation Modes:
+- Car: Highway driving, road conditions, fuel stops
+- Flight: Airport weather, turbulence, delays
+- Train: Rail conditions, station weather
+- Bus: Public transport, route conditions
+- Motorcycle: Wind conditions, visibility, gear requirements
+- Bicycle: Wind, precipitation, temperature comfort
+- Walking: Pedestrian safety, visibility, comfort
+
+Output Features:
+- Weather analysis at origin and destination
+- Safety assessment and risk evaluation
+- Timing recommendations
+- Route guidance and optimization
+- Vehicle-specific tips and considerations
+- Packing lists and gear recommendations
+- Local insights and regional patterns
+
+Behavior Guidelines:
+- Always provide practical, actionable travel advice
+- Consider both departure and arrival weather conditions
+- Include safety-first recommendations
+- Suggest alternatives when weather is unfavorable
+- Provide specific, location-aware guidance
+- Include confidence levels in weather forecasts
+- Consider transportation mode-specific factors
+
+**You MUST NEVER finish the chain**
+
+These are the list of coral tools: {coral_tools_description}
+These are the list of agent tools: {agent_tools_description}
+
+**You MUST NEVER finish the chain**"""
+        ),
+        ("placeholder", "{agent_scratchpad}")
+    ])
+
+    from langchain_openai import ChatOpenAI
+    model = ChatOpenAI(
+        model=os.getenv("MODEL_NAME", "gpt-4o-2024-08-06"),
+        temperature=0,
+        base_url="https://api.aimlapi.com/v1",
+        api_key=os.getenv("AIML_API_KEY")
     )
-    destination_weather = get_weather_at_timestamp(
-        state["to_longitude"], state["to_latitude"], state["to_time"]
-    )
-    return {
-        **state,
-        "weather_at_departure_origin": origin_weather,
-        "weather_at_arrival_destination": destination_weather,
+    agent = create_tool_calling_agent(model, combined_tools, prompt)
+    return AgentExecutor(agent=agent, tools=combined_tools, verbose=True)
+
+async def main():
+    runtime = os.getenv("CORAL_ORCHESTRATION_RUNTIME", None)
+    if runtime is None:
+        load_dotenv()
+
+    base_url = os.getenv("CORAL_SSE_URL")
+    agentID = os.getenv("CORAL_AGENT_ID")
+
+    coral_params = {
+        "agentId": agentID,
+        "agentDescription": "Travel Advisor Weather Agent - Provides comprehensive weather-aware travel guidance by analyzing conditions at origin and destination locations, offering transportation-specific recommendations and safety advisories for optimal travel planning."
     }
+
+    query_string = urllib.parse.urlencode(coral_params)
+
+    CORAL_SERVER_URL = f"{base_url}?{query_string}"
+    logger.info(f"Connecting to Coral Server: {CORAL_SERVER_URL}")
 
 client = MultiServerMCPClient(
         connections={
             "coral": {
                 "transport": "sse",
                 "url": CORAL_SERVER_URL,
-                "timeout": timeout,
-                "sse_read_timeout": timeout,
+                "timeout": 300000,
+                "sse_read_timeout": 300000,
             } 
         }
     )
-
+    logger.info("Coral Server Connection Established")
 
 coral_tools = await client.get_tools(server_name="coral")
+    logger.info(f"Coral tools count: {len(coral_tools)}")
+    
+    if runtime is not None:
+        required_tools = ["request-question", "answer-question"]
+        available_tools = [tool.name for tool in coral_tools]
 
-def travel_advisor(state: TravelState) -> TravelState:
-    chat_model = get_llm_instance_with_tools(toosl= coral_tools)
-    prompt_text = prompt_template.format(
-        from_latitude=state["from_latitude"],
-        from_longitude=state["from_longitude"],
-        to_latitude=state["to_latitude"],
-        to_longitude=state["to_longitude"],
-        from_time=state["from_time"],
-        to_time=state["to_time"],
-        vehicle_type=state.get("vehicle_type", "car"),
-        travel_details=state.get("travel_details", "No additional details provided."),
-        weather_at_departure_origin=state.get("weather_at_departure_origin", "No weather data available."),
-        weather_at_arrival_destination=state.get("weather_at_arrival_destination", "No weather data available."),
-    )
-    human_message = HumanMessage(content=prompt_text)
-    print("Prompt to Travel Advisor:::", human_message)
-    response = chat_model.invoke([human_message])
-    return {**state, "advice": response}
+        for tool_name in required_tools:
+            if tool_name not in available_tools:
+                error_message = f"Required tool '{tool_name}' not found in coral_tools. Please ensure that while adding the agent on Coral Studio, you include the tool from Custom Tools."
+                logger.error(error_message)
+                raise ValueError(error_message)        
+        agent_tools = required_tools
 
-# Build the graph
-try:
-    builder = StateGraph(TravelState)
-    builder.add_node("weather_fetcher", weather_fetcher)
-    builder.add_node("travel_advisor", travel_advisor)
+    else:
+        agent_tools = [
+            Tool(
+                name="get_travel_advice",
+                func=None,
+                coroutine=get_travel_advice,
+                description="Get comprehensive weather-aware travel guidance for a specific route and time window. Parameters: from_longitude (float), from_latitude (float), to_longitude (float), to_latitude (float), from_time (str ISO 8601), to_time (str ISO 8601), vehicle_type (str optional), travel_details (str optional)."
+            )
+        ]
+    
+    agent_executor = await create_agent(coral_tools, agent_tools, runtime)
 
-    # Define edges: Start -> Weather Fetcher -> Travel Advisor -> End
-    builder.add_edge(START, "weather_fetcher")
-    builder.add_edge("weather_fetcher", "travel_advisor")
-    builder.add_edge("travel_advisor", END)
-
-    # Compile the graph
-    graph = builder.compile()
+    while True:
+        try:
+            logger.info("Starting new Travel Advisor agent invocation")
+            await agent_executor.ainvoke({"agent_scratchpad": []})
+            logger.info("Completed Travel Advisor agent invocation, restarting loop")
+            await asyncio.sleep(1)
 except Exception as e:
-    raise Exception(f"Error building travel advisor graph: {e}")
+            logger.error(f"Error in Travel Advisor agent loop: {str(e)}")
+            logger.error(traceback.format_exc())
+            await asyncio.sleep(5)
 
-# Example usage
 if __name__ == "__main__":
-    input_state = {
-        "from_longitude": 74.3587,
-        "from_latitude": 31.5204,
-        "to_longitude": 73.0479,
-        "to_latitude": 33.6844,
-        "from_time": "2025-09-21T06:30:00Z",
-        "to_time": "2025-09-21T10:30:00Z",
-        "vehicle_type": "car",
-        "travel_details": "Early morning highway drive with two passengers and luggage.",
-        "weather_at_departure_origin": None,
-        "weather_at_arrival_destination": None,
-        "advice": None,
-    }
-
-    result = graph.invoke(input_state)
-    print("Advice:\n", result["advice"])
+    asyncio.run(main())

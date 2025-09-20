@@ -1,52 +1,17 @@
-import logging
-import copy
-import os
-import requests
-import json
-from datetime import datetime, timezone
+import urllib.parse
 from dotenv import load_dotenv
-from langchain.schema import SystemMessage, HumanMessage
-from langchain_openai import ChatOpenAI
-from langgraph.graph import MessagesState, StateGraph, START, END
-from langgraph.prebuilt import ToolNode, tools_condition
-from langchain_core.tools import tool
-from pymongo import MongoClient
+import os, json, asyncio, traceback
+from langchain.prompts import ChatPromptTemplate
 from langchain_mcp_adapters.client import MultiServerMCPClient
+from langchain.agents import create_tool_calling_agent, AgentExecutor
+from langchain.tools import Tool
+import logging
+import traceback
+import requests
+from datetime import datetime
 
-# Load environment variables
-load_dotenv()
-
-# Configure logging
-logging.basicConfig(
-    level=logging.ERROR,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    handlers=[
-        logging.FileHandler("agent.log"),
-        logging.StreamHandler()
-    ]
-)
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
-# MongoDB connection
-def get_mongodb_client():
-    mongodb_uri = os.getenv("MONGODB_URI", "mongodb://localhost:27017/")
-    return MongoClient(mongodb_uri)
-
-mongodb_client = get_mongodb_client()
-
-# LLM instance
-def get_llm_instance(temperature=0.7, max_tokens=1500, **kwargs):
-    model = ChatOpenAI(
-        model=os.getenv("MODEL_NAME", "gpt-4o-2024-08-06"),
-        temperature=0,
-        base_url="https://api.aimlapi.com/v1",
-        api_key=os.getenv("AIML_API_KEY")
-    )
-    return model
-
-def get_llm_instance_with_tools(tools=[], **kwargs):
-    llm = get_llm_instance(**kwargs)
-    return llm.bind_tools(tools)
 
 # Geocoding utility
 def get_coordinates(city_name: str) -> dict:
@@ -71,13 +36,12 @@ def get_coordinates(city_name: str) -> dict:
         return {"error": f"Error making geocoding API call: {e}"}
 
 # Weather tools
-@tool
-def get_current_weather(city_name: str) -> str:
+async def get_current_weather(city_name: str) -> str:
     """Retrieve current weather data for a specific city."""
-    print("Tool: get_current_weather Called")
+    logger.info(f"Tool: get_current_weather Called for {city_name}")
     weather_api_key = os.getenv("OPENWEATHERMAP_API_KEY")
     if not weather_api_key:
-        raise ValueError("OpenWeatherMap API key not found in environment variables.")
+        return "Error: OpenWeatherMap API key not found in environment variables."
     
     coords = get_coordinates(city_name)
     if isinstance(coords, dict) and "error" in coords:
@@ -96,21 +60,18 @@ def get_current_weather(city_name: str) -> str:
         response = requests.get(base_url, params=params)
         response.raise_for_status()
         data = response.json()
-        data = f"""Weather Data: {data}"""
-        print("Current weather data:::", data)
-        return data
+        return f"Current weather in {city_name}: {json.dumps(data, indent=2)}"
     except requests.exceptions.RequestException as e:
         return f"error: Error making weather API call: {e}"
     except Exception as e:
         return f"error: An unexpected error occurred: {e}"
 
-@tool
-def get_hourly_weather(city_name: str) -> str:
+async def get_hourly_weather(city_name: str) -> str:
     """Retrieve hourly weather forecast for a specific city for the current day."""
-    print("Tool: get_hourly_weather Called")
+    logger.info(f"Tool: get_hourly_weather Called for {city_name}")
     weather_api_key = os.getenv("OPENWEATHERMAP_API_KEY")
     if not weather_api_key:
-        raise ValueError("OpenWeatherMap API key not found in environment variables.")
+        return "Error: OpenWeatherMap API key not found in environment variables."
     
     coords = get_coordinates(city_name)
     if isinstance(coords, dict) and "error" in coords:
@@ -129,25 +90,22 @@ def get_hourly_weather(city_name: str) -> str:
         response = requests.get(base_url, params=params)
         response.raise_for_status()
         data = response.json()
-        data = f"""Weather Data: \n {data}"""
-        print("Hourly weather data:::", data)
-        return data
+        return f"Hourly weather forecast for {city_name}: {json.dumps(data, indent=2)}"
     except requests.exceptions.RequestException as e:
         return f"error: Error making weather API call: {e}"
     except Exception as e:
         return f"error: An unexpected error occurred: {e}"
 
-@tool
-def get_daily_forecast(city_name: str) -> str:
+async def get_daily_forecast(city_name: str) -> str:
     """Retrieve daily weather forecast for a specific city for today and the next 7 days."""
-    print("Tool: get_daily_forecast Called")
+    logger.info(f"Tool: get_daily_forecast Called for {city_name}")
     weather_api_key = os.getenv("OPENWEATHERMAP_API_KEY")
     if not weather_api_key:
-        raise ValueError("OpenWeatherMap API key not found in environment variables.")
+        return "Error: OpenWeatherMap API key not found in environment variables."
     
     coords = get_coordinates(city_name)
     if "error" in coords:
-        return coords
+        return f"error: {coords['error']}"
     
     base_url = "https://api.openweathermap.org/data/3.0/onecall"
     params = {
@@ -162,18 +120,15 @@ def get_daily_forecast(city_name: str) -> str:
         response = requests.get(base_url, params=params)
         response.raise_for_status()
         data = response.json()
-        data = f"""Weather Data: \n {data}"""
-        print("Daily forecast data:::", data)
-        return data
+        return f"Daily forecast for {city_name}: {json.dumps(data, indent=2)}"
     except requests.exceptions.RequestException as e:
         return f"error: Error making weather API call: {e}"
     except Exception as e:
         return f"error: An unexpected error occurred: {e}"
 
-@tool
-def get_weather_at_specific_time(city_name: str, time_iso: str) -> str:
+async def get_weather_at_specific_time(city_name: str, time_iso: str) -> str:
     """Retrieve weather for a city at a specific time (ISO 8601)."""
-    print("Tool: get_weather_at_specific_time Called")
+    logger.info(f"Tool: get_weather_at_specific_time Called for {city_name} at {time_iso}")
     coords = get_coordinates(city_name)
     
     try:
@@ -206,37 +161,41 @@ def get_weather_at_specific_time(city_name: str, time_iso: str) -> str:
         response = requests.get(base_url, params=params)
         response.raise_for_status()
         data = response.json()
-        data = f"""Weather Data: \n {data}"""
-        return data
+        return f"Weather in {city_name} at {time_iso}: {json.dumps(data, indent=2)}"
     except requests.exceptions.RequestException as e:
         return f"error: Error making weather API call: {e}"
     except Exception as e:
         return f"error: An unexpected error occurred: {e}"
 
-# Weather fetching tools list
-agent_tools = [get_current_weather, get_hourly_weather, get_daily_forecast, get_weather_at_specific_time]
-
-client = MultiServerMCPClient(
-        connections={
-            "coral": {
-                "transport": "sse",
-                "url": CORAL_SERVER_URL,
-                "timeout": timeout,
-                "sse_read_timeout": timeout,
-            } 
-        }
+def get_tools_description(tools):
+    return "\n".join(
+        f"Tool: {tool.name}, Schema: {json.dumps(tool.args).replace('{', '{{').replace('}', '}}')}"
+        for tool in tools
     )
 
-coral_tools = await client.get_tools(server_name="coral")
+async def create_agent(coral_tools, agent_tools, runtime):
+    coral_tools_description = get_tools_description(coral_tools)
+    
+    if runtime is not None:
+        agent_tools_for_description = [
+            tool for tool in coral_tools if tool.name in agent_tools
+        ]
+        agent_tools_description = get_tools_description(agent_tools_for_description)
+        combined_tools = coral_tools + agent_tools_for_description
+        user_request_tool = "request_question"
+        user_answer_tool = "answer_question"
+        print(agent_tools_description)
+    else:
+        # For other runtimes (e.g., devmode), agent_tools is a list of Tool objects
+        agent_tools_description = get_tools_description(agent_tools)
+        combined_tools = coral_tools + agent_tools
+        user_request_tool = "ask_human"
+        user_answer_tool = "ask_human"
 
-combined_tools = agent_tools + coral_tools
-
-# Initialize LLM with tools
-llm_with_tools = get_llm_instance_with_tools(tools=combined_tools)
-
-# System message
-sys_msg = SystemMessage(content="""
-You are ClimeAI — an AI-powered weather expert that delivers accurate, actionable guidance. Introduce yourself to the users and tell them what do you offer in detail.
+    prompt = ChatPromptTemplate.from_messages([
+        (
+            "system",
+            f"""You are ClimeAI — an AI-powered weather expert that delivers accurate, actionable guidance. You specialize in weather-related queries and provide comprehensive weather information and advice.
 
 Your primary responsibility is to help users with all queries directly or indirectly related to weather, such as:
 - Current weather conditions
@@ -250,108 +209,131 @@ You must always remain strictly within the domain of weather.
 If a user asks something outside the scope of weather, politely decline and respond with an apology, such as:
 "I'm sorry, but I can only assist with weather-related questions."
 
-Available Tools:
-1. get_current_weather(city_name: str)
-   - Fetches the current weather conditions for a given city.
-   - Returns live data such as temperature, humidity, pressure, and other real-time atmospheric information.
-
-2. get_hourly_weather(city_name: str)
-   - Provides the hourly weather forecast for the current day in a specific city.
-   - Useful for short-term planning, such as knowing if it might rain in the next few hours.
-
-3. get_daily_forecast(city_name: str)
-   - Retrieves the daily weather forecast for today and the next 7 days.
-   - Ideal for medium-term planning, such as weekly travel, events, or agriculture activities.
-
-4. get_weather_at_specific_time(city_name: str, time_iso: str)
-   - Retrieves weather for a specific city at an exact datetime (ISO 8601).
-   - Internally converts the datetime to a Unix timestamp and calls the One Call 3.0 timemachine endpoint.
-   - Useful for event/travel advice tied to a specific time window.
+Available Weather Tools:
+1. get_current_weather(city_name: str) - Fetches current weather conditions for any city
+2. get_hourly_weather(city_name: str) - Provides hourly forecast for the current day
+3. get_daily_forecast(city_name: str) - Retrieves 7-day weather forecast
+4. get_weather_at_specific_time(city_name: str, time_iso: str) - Weather for specific timestamp
 
 Behavior Guidelines:
-- Always answer queries in a clear, concise, and user-friendly manner.
-- Use the tools effectively to provide accurate and up-to-date weather data.
-- Stay strictly focused on weather-related topics.
-- If a question is outside scope, politely decline and apologize.
- - When giving travel or event advice, explicitly tie suggestions to the forecast (e.g., "Rain likely after 3 PM, consider starting earlier or carrying rain gear").
- - Prefer actionable, practical tips grounded in the specific city and time window the user mentions.
+- Always answer queries in a clear, concise, and user-friendly manner
+- Use the weather tools effectively to provide accurate and up-to-date weather data
+- Stay strictly focused on weather-related topics
+- If a question is outside scope, politely decline and apologize
+- When giving travel or event advice, explicitly tie suggestions to the forecast
+- Prefer actionable, practical tips grounded in the specific city and time window
 
 Formatting & Tone Guidelines:
-- Present responses in a well-organized, structured manner (use brief headings or bullets when helpful)—avoid rigid templates.
-- Include relevant emojis to enhance clarity and engagement; use them tastefully and contextually.
-- Always include units and local time context if possible.
-- Keep paragraphs short and scannable.
-- If data confidence is low, say so and suggest a narrower time window or a follow-up check.
-""")
+- Present responses in a well-organized, structured manner
+- Include relevant emojis to enhance clarity and engagement
+- Always include units and local time context if possible
+- Keep paragraphs short and scannable
+- If data confidence is low, say so and suggest a narrower time window
 
-def generate(state: MessagesState):
-    """Generates a response based on the user's message history."""
-    try:
-        print("msgs::", state["messages"][-6:])
+**You MUST NEVER finish the chain**
 
-        # Build provider-compatible messages:
-        # - Ensure content is not None
-        # - Convert tool role messages into plain HumanMessages containing tool outputs
-        # - Drop assistant messages that only contain tool_calls (AIML rejects null content on tool-calls)
-        def _to_provider_messages(messages):
-            converted = []
-            for message in messages:
-                msg_copy = copy.deepcopy(message)
-                # Normalize content
-                if getattr(msg_copy, "content", None) is None:
-                    try:
-                        msg_copy.content = ""
-                    except Exception:
-                        pass
-                # Detect tool output messages (have tool_call_id attribute)
-                if hasattr(msg_copy, "tool_call_id"):
-                    tool_name = getattr(msg_copy, "name", "tool")
-                    converted.append(
-                        HumanMessage(content=f"Tool {tool_name} result:\n{getattr(msg_copy, 'content', '')}")
-                    )
-                    continue
-                # Detect assistant tool-call messages (additional_kwargs.tool_calls present) and drop them
-                try:
-                    if hasattr(msg_copy, "additional_kwargs") and isinstance(msg_copy.additional_kwargs, dict):
-                        if msg_copy.additional_kwargs.get("tool_calls"):
-                            # Skip adding this message; the following tool result will be added as HumanMessage
-                            continue
-                except Exception:
-                    pass
-                converted.append(msg_copy)
-            return converted
+These are the list of coral tools: {coral_tools_description}
+These are the list of agent tools: {agent_tools_description}
 
-        recent_messages = state["messages"][-6:]
-        provider_messages = _to_provider_messages(recent_messages)
-        invoke_messages = [sys_msg] + provider_messages
+**You MUST NEVER finish the chain**"""
+        ),
+        ("placeholder", "{agent_scratchpad}")
+    ])
 
-        return {"messages": [llm_with_tools.invoke(invoke_messages)]}
-    except Exception as e:
-        logger.error(f"Error during response generation: {e}")
-        raise
-
-# Build graph
-try:
-    from langgraph.checkpoint.mongodb import MongoDBSaver
-    graph_builder = StateGraph(MessagesState)
-    graph_builder.add_node(generate)
-    graph_builder.add_node("tools", ToolNode(weather_fetching_tools))
-    graph_builder.add_edge(START, "generate")
-    graph_builder.add_conditional_edges("generate", tools_condition)
-    graph_builder.add_edge("tools", "generate")
-
-    memory = MongoDBSaver(mongodb_client)
-    graph = graph_builder.compile(checkpointer=memory)
-except Exception as e:
-    logger.error(f"Error building climeai graph: {e}")
-    raise
-
-# Example usage
-if __name__ == "__main__":
-    # Test the agent
-    config = {"configurable": {"thread_id": "test_user"}}
-    result = graph.invoke(
-        {"messages": [{"role": "user", "content": "What's the weather in New York?"}]},
-        config=config
+    from langchain_openai import ChatOpenAI
+    model = ChatOpenAI(
+        model=os.getenv("MODEL_NAME", "gpt-4o-2024-08-06"),
+        temperature=0,
+        base_url="https://api.aimlapi.com/v1",
+        api_key=os.getenv("AIML_API_KEY")
     )
-    print("Response:", result)
+    agent = create_tool_calling_agent(model, combined_tools, prompt)
+    return AgentExecutor(agent=agent, tools=combined_tools, verbose=True)
+
+async def main():
+    runtime = os.getenv("CORAL_ORCHESTRATION_RUNTIME", None)
+    if runtime is None:
+        load_dotenv()
+
+    base_url = os.getenv("CORAL_SSE_URL")
+    agentID = os.getenv("CORAL_AGENT_ID")
+
+    coral_params = {
+        "agentId": agentID,
+        "agentDescription": "ClimeAI - An intelligent weather assistant that provides real-time weather information, forecasts, and weather-aware guidance through natural language conversations."
+    }
+
+    query_string = urllib.parse.urlencode(coral_params)
+
+    CORAL_SERVER_URL = f"{base_url}?{query_string}"
+    logger.info(f"Connecting to Coral Server: {CORAL_SERVER_URL}")
+
+    client = MultiServerMCPClient(
+        connections={
+            "coral": {
+                "transport": "sse",
+                "url": CORAL_SERVER_URL,
+                "timeout": 300000,
+                "sse_read_timeout": 300000,
+            }
+        }
+    )
+    logger.info("Coral Server Connection Established")
+
+    coral_tools = await client.get_tools(server_name="coral")
+    logger.info(f"Coral tools count: {len(coral_tools)}")
+    
+    if runtime is not None:
+        required_tools = ["request-question", "answer-question"]
+        available_tools = [tool.name for tool in coral_tools]
+
+        for tool_name in required_tools:
+            if tool_name not in available_tools:
+                error_message = f"Required tool '{tool_name}' not found in coral_tools. Please ensure that while adding the agent on Coral Studio, you include the tool from Custom Tools."
+                logger.error(error_message)
+                raise ValueError(error_message)        
+        agent_tools = required_tools
+
+    else:
+        agent_tools = [
+            Tool(
+                name="get_current_weather",
+                func=None,
+                coroutine=get_current_weather,
+                description="Get current weather conditions for a specific city."
+            ),
+            Tool(
+                name="get_hourly_weather",
+                func=None,
+                coroutine=get_hourly_weather,
+                description="Get hourly weather forecast for a specific city for the current day."
+            ),
+            Tool(
+                name="get_daily_forecast",
+                func=None,
+                coroutine=get_daily_forecast,
+                description="Get daily weather forecast for a specific city for today and the next 7 days."
+            ),
+            Tool(
+                name="get_weather_at_specific_time",
+                func=None,
+                coroutine=get_weather_at_specific_time,
+                description="Get weather for a city at a specific time (ISO 8601 format)."
+            )
+        ]
+    
+    agent_executor = await create_agent(coral_tools, agent_tools, runtime)
+
+    while True:
+        try:
+            logger.info("Starting new ClimeAI agent invocation")
+            await agent_executor.ainvoke({"agent_scratchpad": []})
+            logger.info("Completed ClimeAI agent invocation, restarting loop")
+            await asyncio.sleep(1)
+except Exception as e:
+            logger.error(f"Error in ClimeAI agent loop: {str(e)}")
+            logger.error(traceback.format_exc())
+            await asyncio.sleep(5)
+
+if __name__ == "__main__":
+    asyncio.run(main())
