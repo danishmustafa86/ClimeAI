@@ -303,10 +303,10 @@ coral_tools = await client.get_tools(server_name="coral")
             await agent_executor.ainvoke({"agent_scratchpad": []})
             logger.info("Completed Travel Advisor agent invocation, restarting loop")
             await asyncio.sleep(1)
-except Exception as e:
-            logger.error(f"Error in Travel Advisor agent loop: {str(e)}")
-            logger.error(traceback.format_exc())
-            await asyncio.sleep(5)
+        except Exception as e:
+                    logger.error(f"Error in Travel Advisor agent loop: {str(e)}")
+                    logger.error(traceback.format_exc())
+                    await asyncio.sleep(5)
 
 if __name__ == "__main__":
     asyncio.run(main())

@@ -330,10 +330,10 @@ async def main():
             await agent_executor.ainvoke({"agent_scratchpad": []})
             logger.info("Completed ClimeAI agent invocation, restarting loop")
             await asyncio.sleep(1)
-except Exception as e:
-            logger.error(f"Error in ClimeAI agent loop: {str(e)}")
-            logger.error(traceback.format_exc())
-            await asyncio.sleep(5)
+        except Exception as e:
+                    logger.error(f"Error in ClimeAI agent loop: {str(e)}")
+                    logger.error(traceback.format_exc())
+                    await asyncio.sleep(5)
 
 if __name__ == "__main__":
     asyncio.run(main())
