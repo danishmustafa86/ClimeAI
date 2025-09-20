@@ -235,19 +235,19 @@ async def main():
     CORAL_SERVER_URL = f"{base_url}?{query_string}"
     logger.info(f"Connecting to Coral Server: {CORAL_SERVER_URL}")
 
-client = MultiServerMCPClient(
-        connections={
-            "coral": {
-                "transport": "sse",
-                "url": CORAL_SERVER_URL,
-                "timeout": 300000,
-                "sse_read_timeout": 300000,
-            } 
-        }
-    )
+    client = MultiServerMCPClient(
+            connections={
+                "coral": {
+                    "transport": "sse",
+                    "url": CORAL_SERVER_URL,
+                    "timeout": 300000,
+                    "sse_read_timeout": 300000,
+                } 
+            }
+        )
     logger.info("Coral Server Connection Established")
 
-coral_tools = await client.get_tools(server_name="coral")
+    coral_tools = await client.get_tools(server_name="coral")
     logger.info(f"Coral tools count: {len(coral_tools)}")
     
     if runtime is not None:
