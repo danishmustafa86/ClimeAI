@@ -1,0 +1,13 @@
+[project]
+name = "travel-advisor-weather-agent"
+version = "0.1.0"
+requires-python = ">=3.13"
+dependencies = [
+    "langchain>=0.3.27",
+    "langchain-aimlapi>=0.1.0",
+    "langchain-community>=0.3.29",
+    "langchain-core>=0.3.76",
+    "langchain-mcp-adapters>=0.1.10",
+    "langgraph>=0.6.7",
+    "langgraph-checkpoint-mongodb>=0.2.0",
+]
