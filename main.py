@@ -7,10 +7,6 @@ import os
 
 app = FastAPI()
 
-
-app.get("/")
-def index():
-    return "Welcome to the Backend API..."
 # Add CORS middleware
 
 # Get allowed origins from environment variable or use defaults
